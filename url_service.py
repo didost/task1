@@ -1,26 +1,45 @@
-from flask import Flask, jsonify
+from flask import Flask, Response
 import requests
+import time
+from prometheus_client import CollectorRegistry, Gauge, generate_latest
 
 app = Flask(__name__)
 
-# Function to fetch the status of a URL
-def fetch_url_status(url):
+def check_url(url):
     try:
-        response = requests.get(url)
-        return {'url': url, 'status_code': response.status_code, 'reason': response.reason}
-    except requests.exceptions.RequestException as e:
-        return {'url': url, 'error': str(e)}
+        start_time = time.time()
+        response = requests.get(url, timeout=10)
+        end_time = time.time()
+        
+        response_time = (end_time - start_time) * 1000  # in milliseconds
+        is_up = response.status_code == 200
+        return is_up, response_time
+    except requests.exceptions.RequestException:
+        return False, None
 
-# Route to query the two URLs
-@app.route('/query', methods=['GET'])
-def query_urls():
+@app.route('/metrics')
+def metrics():
     url1 = 'https://httpstat.us/503'
     url2 = 'https://httpstat.us/200'
 
-    result1 = fetch_url_status(url1)
-    result2 = fetch_url_status(url2)
+    is_up_1, response_time_1 = check_url(url1)
+    is_up_2, response_time_2 = check_url(url2)
 
-    return jsonify({'result1': result1, 'result2': result2})
+    # Create a registry and add metrics to it
+    registry = CollectorRegistry()
+    gauge_url1_up = Gauge('url1_up', 'Check if url1 is up', registry=registry)
+    gauge_url1_response_time = Gauge('url1_response_time_ms', 'Response time for url1 in ms', registry=registry)
+    gauge_url2_up = Gauge('url2_up', 'Check if url2 is up', registry=registry)
+    gauge_url2_response_time = Gauge('url2_response_time_ms', 'Response time for url2 in ms', registry=registry)
+
+    # Set values for the metrics
+    gauge_url1_up.set(1 if is_up_1 else 0)
+    gauge_url1_response_time.set(response_time_1 if response_time_1 else 0)
+    gauge_url2_up.set(1 if is_up_2 else 0)
+    gauge_url2_response_time.set(response_time_2 if response_time_2 else 0)
+
+    # Generate the metrics output in Prometheus format
+    return Response(generate_latest(registry), mimetype='text/plain')
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(host='0.0.0.0', port=5000, debug=True)
